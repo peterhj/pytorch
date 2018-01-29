@@ -37,21 +37,31 @@ struct SymbolicVariable {
       }
       return out;
   }
-  SymbolicVariable operator*(SymbolicVariable rhs) const {
+  SymbolicVariable operator*(const SymbolicVariable rhs) const {
     return create(kmul, {*this, rhs})[0].typeLike(*this);
   }
-  SymbolicVariable operator+(SymbolicVariable rhs) const {
+  SymbolicVariable operator+(const SymbolicVariable rhs) const {
     Node * n;
     auto r = create(kadd, {*this, rhs}, 1, &n)[0].typeLike(*this);
     n->t_(kalpha, at::Scalar(1).toTensor());
     return r;
   }
+  SymbolicVariable operator+(at::Scalar rhs) const {
+    Node * n;
+    auto r = create(kadd, {*this}, 1, &n)[0].typeLike(*this);
+    n->t_(kalpha, at::Scalar(1).toTensor());
+    n->t_(kother, rhs.toTensor());
+    return r;
+  }
   SymbolicVariable operator-() const {
     return create(kneg, {*this})[0].typeLike(*this);
   }
-  SymbolicVariable mm(SymbolicVariable rhs) const {
+  SymbolicVariable mm(const SymbolicVariable rhs) const {
     // TODO: set types
     return create(s("mm"), {*this, rhs})[0];
+  }
+  SymbolicVariable t() const {
+    return create(s("t"), {*this})[0];
   }
   SymbolicVariable sigmoid() const {
     return create(ksigmoid, {*this})[0].typeLike(*this);
@@ -86,5 +96,18 @@ private:
   }
   Value * v;
 };
+
+template<typename T, typename = typename std::enable_if<std::is_arithmetic<T>::value>::type>
+inline SymbolicVariable operator+(T lhs, SymbolicVariable rhs) {
+  return rhs + at::Scalar(lhs);
+}
+
+inline SymbolicVariable operator+(at::Scalar lhs, SymbolicVariable rhs) {
+  return rhs + lhs;
+}
+
+inline SymbolicVariable operator-(at::Scalar lhs, SymbolicVariable rhs) {
+  return (lhs + (-rhs));
+}
 
 }}

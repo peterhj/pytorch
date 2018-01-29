@@ -124,6 +124,8 @@ _(tan) \
 _(trunc) \
 _(zeros) \
 _(exponent) \
+_(mm) \
+_(t) \
 _(device)
 
   enum BuiltinSymbol {

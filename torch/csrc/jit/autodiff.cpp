@@ -28,7 +28,7 @@ Value* addValues(Value *a, Value *b, Node *node = nullptr) {
 
 
 std::unordered_set<Symbol> differentiable_kinds = {
-  kadd, ksub, kmul,
+  kadd, ksub, kmul, ksigmoid, ktanh, kmm, kchunk, ksplit, kt
 };
 
 bool isDifferentiable(Node * n) {
@@ -37,7 +37,8 @@ bool isDifferentiable(Node * n) {
 
 static std::vector<Value*> gradientForNode(Node* node, ArrayRef<Value*> grad_values) {
   const auto build_sym_grad = [node](const std::vector<SymbolicVariable>& grads) -> std::vector<SymbolicVariable> {
-    auto inputs = node->inputs();
+    auto inputs = fmap<SymbolicVariable>(node->inputs());
+    auto outputs = fmap<SymbolicVariable>(node->outputs());
     switch(node->kind()) {
       case kadd:
         return {grads[0], grads[0]};
@@ -45,6 +46,40 @@ static std::vector<Value*> gradientForNode(Node* node, ArrayRef<Value*> grad_val
         return {grads[0], -grads[0]};
       case kmul:
         return {grads[0] * inputs[1], grads[0] * inputs[0]};
+      case ksigmoid:
+        return {grads[0] * outputs[0] * (1 - outputs[0])};
+      case ktanh:
+        return {grads[0] * (1 - outputs[0] * outputs[0])};
+      case kchunk:
+      case ksplit:
+        return {SymbolicVariable::cat(grads, node->i(kdim))};
+      case kt:
+        return {grads[0].t()};
+      case kmm:
+        SymbolicVariable dmat1, dmat2;
+        if (inputs[0].value()->hasType()) {
+          auto type = inputs[0].value()->type()->expect<TensorType>();
+          auto sizes = type->sizes(), strides = type->strides();
+          if (strides[0] == 1 && strides[1] == sizes[0]) {
+            dmat1 = inputs[1].mm(grads[0].t()).t();
+          } else {
+            dmat1 = grads[0].mm(inputs[1].t());
+          }
+        } else {
+          dmat1 = grads[0].mm(inputs[1].t());
+        }
+        if (inputs[1].value()->hasType()) {
+          auto type = inputs[1].value()->type()->expect<TensorType>();
+          auto sizes = type->sizes(), strides = type->strides();
+          if (strides[0] == 1 && strides[1] == sizes[0]) {
+            dmat2 = grads[0].t().mm(inputs[0]).t();
+          } else {
+            dmat2 = inputs[0].t().mm(grads[0]);
+          }
+        } else {
+          dmat2 = grads[0].mm(inputs[1].t());
+        }
+        return {dmat1, dmat2};
     }
     throw std::runtime_error(std::string("don't support differentiation of `") +
                             node->kind().toString() + "`");
