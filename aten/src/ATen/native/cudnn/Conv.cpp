@@ -456,7 +456,7 @@ size_t getMaxWorkspaceSize(
     return max_ws_size;
 }
 
-template<typename perf_t>
+/*template<typename perf_t>
 perf_t getBestAlgorithm(perf_t *perfResults, bool deterministic, int n_algo) {
   if (deterministic) {
     // iterate over perf results of all algorithms and find the best deterministic algo
@@ -472,6 +472,71 @@ perf_t getBestAlgorithm(perf_t *perfResults, bool deterministic, int n_algo) {
   } else {
     return perfResults[0];
   }
+}*/
+
+cudnnConvolutionFwdAlgoPerf_t getBestAlgorithmFwd(cudnnConvolutionFwdAlgoPerf_t *perfResults, bool deterministic, int n_algo) {
+  // iterate over perf results of all algorithms and find the best deterministic algo
+  printf("DEBUG: pytorch: getBestAlgorithmFwd\n");
+  for (int i = 0; i < n_algo; i++) {
+    if (perfResults[i].algo == CUDNN_CONVOLUTION_FWD_ALGO_FFT_TILING ||
+        perfResults[i].algo == CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD_NONFUSED) {
+      continue;
+    }
+    if (deterministic) {
+      // TODO: Shouldn't all returned results be successful?
+      // Double check documentation for cudnnFindConvolutionForwardAlgorithmEx
+      if (perfResults[i].status == CUDNN_STATUS_SUCCESS &&
+          perfResults[i].determinism == CUDNN_DETERMINISTIC) {
+        return perfResults[i];
+      }
+    } else {
+      return perfResults[i];
+    }
+  }
+  throw std::runtime_error("no deterministic convolution algorithms available in CuDNN");
+}
+
+cudnnConvolutionBwdFilterAlgoPerf_t getBestAlgorithmBwdFilter(cudnnConvolutionBwdFilterAlgoPerf_t *perfResults, bool deterministic, int n_algo) {
+  // iterate over perf results of all algorithms and find the best deterministic algo
+  printf("DEBUG: pytorch: getBestAlgorithmBwdFilter\n");
+  for (int i = 0; i < n_algo; i++) {
+    if (perfResults[i].algo == CUDNN_CONVOLUTION_BWD_FILTER_ALGO_WINOGRAD_NONFUSED) {
+      continue;
+    }
+    if (deterministic) {
+      // TODO: Shouldn't all returned results be successful?
+      // Double check documentation for cudnnFindConvolutionForwardAlgorithmEx
+      if (perfResults[i].status == CUDNN_STATUS_SUCCESS &&
+          perfResults[i].determinism == CUDNN_DETERMINISTIC) {
+        return perfResults[i];
+      }
+    } else {
+      return perfResults[i];
+    }
+  }
+  throw std::runtime_error("no deterministic convolution algorithms available in CuDNN");
+}
+
+cudnnConvolutionBwdDataAlgoPerf_t getBestAlgorithmBwdData(cudnnConvolutionBwdDataAlgoPerf_t *perfResults, bool deterministic, int n_algo) {
+  // iterate over perf results of all algorithms and find the best deterministic algo
+  printf("DEBUG: pytorch: getBestAlgorithmBwdData\n");
+  for (int i = 0; i < n_algo; i++) {
+    if (perfResults[i].algo == CUDNN_CONVOLUTION_BWD_DATA_ALGO_FFT_TILING ||
+        perfResults[i].algo == CUDNN_CONVOLUTION_BWD_DATA_ALGO_WINOGRAD_NONFUSED) {
+      continue;
+    }
+    if (deterministic) {
+      // TODO: Shouldn't all returned results be successful?
+      // Double check documentation for cudnnFindConvolutionForwardAlgorithmEx
+      if (perfResults[i].status == CUDNN_STATUS_SUCCESS &&
+          perfResults[i].determinism == CUDNN_DETERMINISTIC) {
+        return perfResults[i];
+      }
+    } else {
+      return perfResults[i];
+    }
+  }
+  throw std::runtime_error("no deterministic convolution algorithms available in CuDNN");
 }
 
 template<>
@@ -511,7 +576,7 @@ struct algorithm_search<cudnnConvolutionFwdAlgo_t> {
         perf_results.get(),
         ws.data,
         ws.size));
-    return getBestAlgorithm(perf_results.get(), args.params.deterministic, perf_count);
+    return getBestAlgorithmFwd(perf_results.get(), args.params.deterministic, perf_count);
   }
 
   static void getAlgorithm(
@@ -580,7 +645,7 @@ struct algorithm_search<cudnnConvolutionBwdDataAlgo_t> {
         perf_results.get(),
         ws.data,
         ws.size));
-    return getBestAlgorithm(perf_results.get(), args.params.deterministic, perf_count);
+    return getBestAlgorithmBwdData(perf_results.get(), args.params.deterministic, perf_count);
   }
 
   static void getAlgorithm(const ConvolutionArgs& args, algo_t* algo) {
@@ -650,7 +715,7 @@ struct algorithm_search<cudnnConvolutionBwdFilterAlgo_t> {
         perf_results.get(),
         ws.data,
         ws.size));
-    return getBestAlgorithm<perf_t>(perf_results.get(), args.params.deterministic, perf_count);
+    return getBestAlgorithmBwdFilter(perf_results.get(), args.params.deterministic, perf_count);
   }
 
   static void getAlgorithm(const ConvolutionArgs& args, algo_t* algo) {
@@ -693,10 +758,10 @@ void findAlgorithm(const ConvolutionArgs& args, bool benchmark, algo_t* algo) {
     return;
   }
 
-  if (!benchmark) {
+  /*if (!benchmark) {
     search::getAlgorithm(args, algo);
     return;
-  }
+  }*/
 
   if (cache.find(args.params, algo)) {
     // re-check cache since another thread may have benchmarked the algorithm
