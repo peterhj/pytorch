@@ -26,7 +26,8 @@ from __future__ import print_function
 import os
 import sys
 from .utils import CodeTemplate, nested_dict, write
-from .gen_autograd import VIEW_FUNCTIONS, template_path
+from .gen_autograd import VIEW_FUNCTIONS, template_path, \
+    HARDCODED_DIFFERENTIABLE_OUTPUTS
 from .gen_autograd_functions import uses_single_grad
 
 VARIABLE_TYPE_H = CodeTemplate.from_file(template_path + '/VariableType.h')
@@ -60,7 +61,7 @@ DONT_PROFILE = {
 # not examine or modify requires_grad or grad_fn.
 DONT_REQUIRE_DERIVATIVE = {
     # These  only depend on the input Tensor's shape and device, not the data
-    'ones_like', 'zeros_like', 'randn_like',
+    'ones_like', 'zeros_like', 'rand_like', 'randn_like',
     # Tensor constructors
     'sparse_coo_tensor',
     # These are only implemented on integral types
@@ -68,20 +69,12 @@ DONT_REQUIRE_DERIVATIVE = {
     '__lshift__', '__or__', '__rshift__', '__xor__',
 }
 
-# These functions use `unpack_any` instead of `unpack`. They don't check the
-# concrete type of arguments. Eventually all VariableType functions should only
-# check that arguments are Variables.
-USE_UNPACK_ANY = {
-    'sparse_coo_tensor', 'cudnn_batch_norm', 'cudnn_batch_norm_forward',
-    'cudnn_batch_norm_backward',
-}
-
 METHOD_DECLARATION = CodeTemplate("""\
-virtual ${return_type} ${method_prefix_derived}${api_name}(${formals}) const override;
+virtual ${return_type} ${method_prefix_derived}${api_name}(${type_method_formals}) const override;
 """)
 
 METHOD_DEFINITION = CodeTemplate("""\
-${return_type} VariableType::${method_prefix_derived}${api_name}(${formals}) const {
+${return_type} VariableType::${method_prefix_derived}${api_name}(${type_method_formals}) const {
   ${type_definition_body}
 }
 """)
@@ -101,11 +94,11 @@ if (compute_requires_grad( ${args_with_derivatives} )) {
 
 ASSIGN_GRAD_FN = CodeTemplate("""\
 grad_fn = std::make_shared<${op}>(${op_ctor});
-grad_fn->next_functions = compute_next_functions( ${args_with_derivatives} );
+grad_fn->set_next_edges(collect_next_edges( ${args_with_derivatives} ));
 """)
 
 CALL_VIA_TYPE = CodeTemplate("""\
-Type::${method_prefix_derived}${api_name}(${args})""")
+Type::${method_prefix_derived}${api_name}(${type_method_args})""")
 
 CALL_VIA_DERIVED = CodeTemplate("""\
 baseType->${method_prefix_derived}${base_name}(${unpacked_args})""")
@@ -194,13 +187,17 @@ def emit_body(declaration):
 
     inputs = [arg for arg in arguments if not arg.get('output', False)]
     differentiable_inputs = list(filter(is_differentiable, inputs))
-    differentiable_outputs = list(filter(is_differentiable, returns))
+    candidate_differentiable_outputs = list(filter(is_differentiable, returns))
 
-    if uses_single_grad(func):
-        # If we only use `grad` and not `grads[i]` in the derivative than
-        # assume that only the first output is differentiable. TODO: remove
-        # this heuristic.
-        differentiable_outputs = differentiable_outputs[:1]
+    hardcoded_diff = HARDCODED_DIFFERENTIABLE_OUTPUTS.get(name)
+    if hardcoded_diff:
+        differentiable_outputs = []
+        for i in hardcoded_diff:
+            differentiable_outputs.append(candidate_differentiable_outputs[i])
+    elif uses_single_grad(func):
+        differentiable_outputs = candidate_differentiable_outputs[:1]
+    else:
+        differentiable_outputs = candidate_differentiable_outputs
 
     requires_derivative = (
         base_name not in DONT_REQUIRE_DERIVATIVE and
@@ -290,6 +287,9 @@ def emit_body(declaration):
                 if inplace and is_output:
                     var = 'self'
                 expr = 'SavedVariable({}, {})'.format(var, str(is_output).lower())
+            elif arg['type'] == 'TensorList':
+                name += '_'
+                expr = 'make_saved_variable_list({})'.format(arg['name'])
             stmts.append('grad_fn->{} = {};'.format(name, expr))
         return stmts
 
@@ -310,12 +310,15 @@ def emit_body(declaration):
                            if arg.get('output', False)]
             return '{' + ', '.join(output_args) + '}'
         trace_outs = [r['name'] for r in declaration['returns']]
-        return CodeTemplate("{ ${outs} }").substitute(outs=trace_outs)
+        if any(ret['dynamic_type'] == 'TensorList' for ret in declaration['returns']):
+            return CodeTemplate("flatten( ${outs} )").substitute(outs=trace_outs)
+        else:
+            return CodeTemplate("{ ${outs} }").substitute(outs=trace_outs)
 
     def emit_record_trace(env):
-        # Operations involving Generator and Storage are not traceable
+        # Operations involving Generator, Storage, Type are not traceable
         # at the moment
-        if any(arg['simple_type'] in {'Generator', 'Storage'} for arg in declaration['arguments']):
+        if any(arg['simple_type'] in {'Generator', 'Storage', 'Type'} for arg in declaration['arguments']):
             return ('', '')
         # We can't trace functions which don't have any Tensor or TensorList returns
         if 'Tensor' not in declaration['return_type']:
@@ -367,6 +370,7 @@ def emit_body(declaration):
         local['trace_name'] = declaration['api_name']
         if local['trace_name'].endswith('_'):
             local['trace_name'] = local['trace_name'][:-1]
+
         local['trace_outputs'] = get_trace_outputs(declaration)
 
         combined = nested_dict(local, nested_dict(env, declaration))
@@ -377,8 +381,9 @@ def emit_body(declaration):
             return ''
         if len(declaration['returns']) == 1:
             return ''
-        names = [ret['name'] for ret in declaration['returns']]
-        return 'Tensor {};'.format(', '.join(names))
+        # TODO: this will be ugly
+        names = [ret['type'] + ' ' + ret['name'] + ';' for ret in declaration['returns']]
+        return '\n'.join(names)
 
     def wrap_output(call):
         if 'Tensor' not in declaration['return_type']:
@@ -471,43 +476,29 @@ def emit_body(declaration):
     body.append(pre_record_trace)
     body.append(emit_call(env))
     if requires_derivative:
-        if inplace and is_view and not os.environ.get('WITH_SCALARS'):
-            body.append('ensure_no_aten_scalars(self);')
         # set_flags has to appear after version_counter, because rebase_history
         # requires that the counter is incremented before it is called
         body.extend(emit_increment_version())
         body.append(emit_history())
+    # post_record_trace must appear before save_outputs so that saved outputs
+    # have their tracing state saved (that is setup by recordTrace)
+    body.append(post_record_trace)
     if requires_derivative:
         body.append(emit_save_outputs())
-    body.append(post_record_trace)
     body.append('return {};'.format(get_return_value()))
     return body
 
 
 def unpack_args(env, declaration):
-    use_unpack_any = declaration['name'] in USE_UNPACK_ANY
-
     def requires_unpack(arg):
         return 'Tensor' in arg['dynamic_type']
-
-    def get_suffix(dynamic_type, is_nullable):
-        if use_unpack_any:
-            return '_any' if not is_nullable else '_any_opt'
-        elif is_nullable:
-            assert dynamic_type == 'Tensor'
-            return '_opt'
-        elif dynamic_type == 'IndexTensor':
-            return '_long'
-        elif dynamic_type == 'IntegerTensor':
-            return '_int'
-        elif dynamic_type == 'BoolTensor':
-            return '_byte'
-        else:
-            return ''
 
     body = []
     unpacked_args = []
     for i, arg in enumerate(declaration['arguments']):
+        # these arguments are skipped from the Type method.
+        if arg.get('is_type_dispatched'):
+            continue
         if not requires_unpack(arg):
             unpacked_args.append(arg['name'])
             continue
@@ -515,10 +506,7 @@ def unpack_args(env, declaration):
         dynamic_type = arg['dynamic_type']
         is_nullable = arg.get('is_nullable', False)
         ref = (not is_nullable) and dynamic_type not in ['TensorList', 'SparseTensor']
-        suffix = get_suffix(dynamic_type, is_nullable)
-        if dynamic_type == 'TensorList' and declaration['name'] == 'index':
-            # TODO: specify this in Declarations.yaml somehow
-            suffix = '_idxs'
+        suffix = '_opt' if is_nullable else ''
 
         body.append(UNPACK_TENSOR.substitute(
             arg_name=arg['name'],
@@ -552,14 +540,22 @@ def dispatch_strategy(declaration):
           get dispatched back to VariableType (which will ensure that they
           are differentiable.)
     """
-    if declaration['abstract'] or declaration['derivative'] is not None:
+    if (declaration['abstract'] or declaration['derivative'] is not None or
+            any(arg.get('is_type_dispatched') for arg in declaration['arguments'])):
         # If the function is abstract (not implemented on at::Type), we must
         # call the implementation on the derived type with unpacked tensors.
+
         # If the function has a derivative specified and is concrete, we could
         # call either implementation. We prefer the calling the derived
         # type's implementation with unpacked tensors because it is more
         # performant in some cases: any internal calls to other ATen functions
         # won't have the history tracked.
+
+        # If the function has a type dispatched argument (i.e. is a factory),
+        # we prefer calling the derived type's implementation both because it is
+        # more performant and to ensure factory functions return tensors with _version
+        # of 0 (probably not strictly necessary, but nice to have to keeps versions simple
+        # to understand.
         return 'use_derived'
     else:
         # If the function is concrete (we don't have to override it) and we
