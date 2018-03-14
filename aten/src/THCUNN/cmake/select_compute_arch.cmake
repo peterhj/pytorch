@@ -21,7 +21,7 @@
 set(CUDA_KNOWN_GPU_ARCHITECTURES  "Fermi" "Kepler" "Maxwell")
 
 # This list will be used for CUDA_ARCH_NAME = Common option (enabled by default)
-set(CUDA_COMMON_GPU_ARCHITECTURES "3.0" "3.5" "5.0")
+set(CUDA_COMMON_GPU_ARCHITECTURES "3.0" "3.5" "3.7" "5.0")
 
 if (CUDA_VERSION VERSION_GREATER "6.5")
   list(APPEND CUDA_KNOWN_GPU_ARCHITECTURES "Kepler+Tegra" "Kepler+Tesla" "Maxwell+Tegra")
