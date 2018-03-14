@@ -479,7 +479,7 @@ cudnnConvolutionFwdAlgoPerf_t getBestAlgorithmFwd(cudnnConvolutionFwdAlgoPerf_t 
   printf("DEBUG: pytorch: getBestAlgorithmFwd\n");
   for (int i = 0; i < n_algo; i++) {
     if (perfResults[i].algo == CUDNN_CONVOLUTION_FWD_ALGO_FFT_TILING ||
-        perfResults[i].algo == CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD_NONFUSED) {
+        (cudnnGetVersion() < 7000UL && perfResults[i].algo == CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD_NONFUSED)) {
       continue;
     }
     if (deterministic) {
@@ -500,7 +500,7 @@ cudnnConvolutionBwdFilterAlgoPerf_t getBestAlgorithmBwdFilter(cudnnConvolutionBw
   // iterate over perf results of all algorithms and find the best deterministic algo
   printf("DEBUG: pytorch: getBestAlgorithmBwdFilter\n");
   for (int i = 0; i < n_algo; i++) {
-    if (perfResults[i].algo == CUDNN_CONVOLUTION_BWD_FILTER_ALGO_WINOGRAD_NONFUSED) {
+    if (cudnnGetVersion() < 7000UL && perfResults[i].algo == CUDNN_CONVOLUTION_BWD_FILTER_ALGO_WINOGRAD_NONFUSED) {
       continue;
     }
     if (deterministic) {
@@ -521,8 +521,7 @@ cudnnConvolutionBwdDataAlgoPerf_t getBestAlgorithmBwdData(cudnnConvolutionBwdDat
   // iterate over perf results of all algorithms and find the best deterministic algo
   printf("DEBUG: pytorch: getBestAlgorithmBwdData\n");
   for (int i = 0; i < n_algo; i++) {
-    if (perfResults[i].algo == CUDNN_CONVOLUTION_BWD_DATA_ALGO_FFT_TILING ||
-        perfResults[i].algo == CUDNN_CONVOLUTION_BWD_DATA_ALGO_WINOGRAD_NONFUSED) {
+    if (cudnnGetVersion() < 7000UL && perfResults[i].algo == CUDNN_CONVOLUTION_BWD_DATA_ALGO_WINOGRAD_NONFUSED) {
       continue;
     }
     if (deterministic) {
